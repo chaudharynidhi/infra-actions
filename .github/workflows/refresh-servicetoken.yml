@@ -1,8 +1,6 @@
 name: Service Token Check and Refresh
 
 on:
-  schedule:
-    - cron: '0 0 * * *' # Runs daily at midnight UTC
   workflow_dispatch: # Allows manual trigger
 
 jobs:
@@ -36,4 +34,3 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLEVERTAP_CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_AUTHORIZATION_TOKEN: ${{ secrets.CLEVERTAP_SNE_CLOUDLFARE_AUTHORIZATION_TOKEN }}
-          DRY_RUN: true # Set to true to avoid actual token refresh
