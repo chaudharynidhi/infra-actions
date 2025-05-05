@@ -22,7 +22,7 @@ def is_expiring_soon(expiry_date_str):
 def main():
     tokens = get_tokens()
     print(t for t in tokens["result"])
-    expiring = [t for t in tokens if is_expiring_soon(t["expires_at"])]
+    expiring = [t for t in tokens["result"] if is_expiring_soon(t["expires_at"])]
     if not expiring:
         print("✅ No tokens expiring in the next 30 days.")
     else:
