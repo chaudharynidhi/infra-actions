@@ -1,6 +1,6 @@
 import os
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 API_BASE = "https://api.cloudflare.com/client/v4/accounts"
 API_BASE = f"{API_BASE}/{os.environ['CLOUDFLARE_ACCOUNT_ID']}/access/service_tokens"
@@ -16,8 +16,10 @@ def get_tokens():
     return response.json()
 
 def is_expiring_soon(expiry_date_str):
-    expiry_date = datetime.fromisoformat(expiry_date_str)
-    return expiry_date <= datetime.utcnow() + timedelta(days=30)
+    # Replace 'Z' with '+00:00' to make it compatible with fromisoformat
+    expiry_date = datetime.fromisoformat(expiry_date_str.replace("Z", "+00:00"))
+    now = datetime.now(timezone.utc)
+    return expiry_date <= now + timedelta(days=30)
 
 def main():
     tokens = get_tokens()
