@@ -18,6 +18,11 @@ jobs:
         with:
           python-version: '3.x'
 
+      - name: Install Dependencies
+        uses: py-actions/py-dependency-install@v4
+        with:
+            path: "./requirements.txt" # Path to your requirements file
+
       - name: List Tokens Expiring in Next 30 Days
         run: |
           python ./scripts/list-service-token.py
