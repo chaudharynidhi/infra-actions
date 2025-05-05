@@ -13,6 +13,7 @@ HEADERS = {
 def get_tokens():
     response = requests.get(f"{API_BASE}", headers=HEADERS)
     response.raise_for_status()
+    print(response.json())
     return response.json()
 
 def is_expiring_soon(expiry_date_str):
