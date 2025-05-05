@@ -6,7 +6,7 @@ API_BASE = f"{API_BASE}/{os.environ['CLOUDFLARE_ACCOUNT_ID']}/access/service_tok
 HEADERS = {
     "Authorization": f"Bearer {os.environ['CLOUDFLARE_API_AUTHORIZATION_TOKEN']}",
     "Content-Type": "application/json",
-    "X-Auth-Email": "nidhi.chaudhary@clevertap.com"
+    "X-Auth-Email": "infra@clevertap.com"
 }
 
 def refresh_token(token_id):

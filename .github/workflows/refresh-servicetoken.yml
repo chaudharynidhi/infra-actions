@@ -30,4 +30,10 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLEVERTAP_CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_AUTHORIZATION_TOKEN: ${{ secrets.CLEVERTAP_SNE_CLOUDLFARE_AUTHORIZATION_TOKEN }}
 
-          # Add any other required environment variables
+      - name: Refresh Tokens
+        run: |
+          python ./scripts/refresh-service-token.py
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLEVERTAP_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_AUTHORIZATION_TOKEN: ${{ secrets.CLEVERTAP_SNE_CLOUDLFARE_AUTHORIZATION_TOKEN }}
+          DRY_RUN: true # Set to true to avoid actual token refresh
