@@ -13,7 +13,7 @@ def create_maintenance_window(service_id):
         "Accept": "application/vnd.pagerduty+json;version=2"
     }
     start_time = datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z')
-    end_time = (datetime.now(UTC) + timedelta(minutes=30)).isoformat(timespec='seconds').replace('+00:00', 'Z')
+    end_time = (datetime.now(UTC) + timedelta(seconds=30)).isoformat(timespec='seconds').replace('+00:00', 'Z')
     data = {
         "maintenance_window": {
             "type": "service",
