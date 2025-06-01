@@ -1,0 +1,28 @@
+name: Sensu Maintenance
+
+on:
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  check-and-refresh-tokens:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python (if scripts are in Python)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Dependencies
+        uses: py-actions/py-dependency-install@v4
+        with:
+            path: "./requirements.txt" # Path to your requirements file
+
+      - name: Run PD Maintenance
+        run: |
+          python ./scripts/pd-maintenance.py
+        env:
+          CLEVERTAP_SNE_PD_AUTHORIZATION_TOKEN: ${{ secrets.CLEVERTAP_SNE_PD_AUTHORIZATION_TOKEN }}
