@@ -1,6 +1,8 @@
 name: Sensu Maintenance
 
 on:
+  repository_dispatch:
+    types: do-something
   workflow_dispatch: # Allows manual trigger
 
 jobs:
