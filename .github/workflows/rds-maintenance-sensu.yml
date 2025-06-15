@@ -1,0 +1,399 @@
+# GitHub Workflow to check and apply overdue RDS maintenance
+name: RDS Maintenance Check and Apply
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+env:
+  AWS_REGION: us-east-1 # Change to your preferred region
+  CLEVERTAP_SNE_PD_AUTHORIZATION_TOKEN: ${{ secrets.CLEVERTAP_SNE_PD_AUTHORIZATION_TOKEN }}
+  RDS_INSTANCE_IDENTIFIER: system-sensu-v2-sensuv2rdsdbinstance-uqswleum7tc0
+
+jobs:
+  check-and-apply-maintenance:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq curl python3 python3-pip
+        pip3 install awscli requests
+    
+    - name: Create PagerDuty maintenance script
+      run: |
+        cat > pagerduty-maintenance.py << 'EOF'
+        #!/usr/bin/env python3
+        import requests
+        from datetime import datetime, timedelta, UTC
+        import json
+        import os
+        import sys
+
+        def create_maintenance_window(service_id):
+            url = "https://api.pagerduty.com/maintenance_windows"
+            headers = {
+                "Authorization": f"Token token={os.environ.get('CLEVERTAP_SNE_PD_AUTHORIZATION_TOKEN')}",
+                "Content-Type": "application/json",
+                "Accept": "application/vnd.pagerduty+json;version=2"
+            }
+            start_time = datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z')
+            end_time = (datetime.now(UTC) + timedelta(minutes=30)).isoformat(timespec='seconds').replace('+00:00', 'Z')
+            data = {
+                "maintenance_window": {
+                    "type": "service",
+                    "description": "Scheduled maintenance",
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "services": service_id
+                }
+            }
+
+            try:
+                response = requests.post(url, headers=headers, json=data)
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.RequestException as e:
+                print(f"[ERROR] Failed to create maintenance window: {e}")
+                return None
+
+        def get_services_id():
+            url = "https://api.pagerduty.com/services"
+            headers = {
+                "Authorization": f"Token token={os.environ.get('CLEVERTAP_SNE_PD_AUTHORIZATION_TOKEN')}",
+                "Content-Type": "application/json",
+                "Accept": "application/vnd.pagerduty+json;version=2"
+            }
+
+            try:
+                response = requests.get(url, headers=headers)
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.RequestException as e:
+                print(f"[ERROR] Failed to fetch service IDs: {e}")
+                return None
+
+        if __name__ == "__main__":
+            services_response = get_services_id()
+            if services_response and 'services' in services_response:
+                try:
+                    service_data = [{"id": s['id'], "type": "service"} for s in services_response['services']]
+                    maintenance_window = create_maintenance_window(service_data)
+                    if maintenance_window:
+                        print("Maintenance window created:", json.dumps(maintenance_window, indent=2))
+                    else:
+                        print("[ERROR] Could not create maintenance window.")
+                except Exception as e:
+                    print(f"[ERROR] Unexpected error: {e}")
+            else:
+                print("[ERROR] No services found or failed to retrieve service data.")
+                sys.exit(1)
+        EOF
+        
+        chmod +x pagerduty-maintenance.py
+    
+    - name: Create improved maintenance window checker
+      run: |
+        cat > check-maintenance-window.py << 'EOF'
+        #!/usr/bin/env python3
+        from datetime import datetime, timedelta, timezone
+        import sys
+
+        def parse_maintenance_window(window_str):
+            """Parse AWS maintenance window format: ddd:hh:mm-ddd:hh:mm"""
+            if not window_str or window_str == "null":
+                return None, None
+            
+            try:
+                start_str, end_str = window_str.split('-')
+                
+                # Parse start
+                start_parts = start_str.split(':')
+                start_day = start_parts[0].lower()
+                start_hour = int(start_parts[1])
+                start_minute = int(start_parts[2])
+                
+                # Parse end
+                end_parts = end_str.split(':')
+                end_day = end_parts[0].lower()
+                end_hour = int(end_parts[1])
+                end_minute = int(end_parts[2])
+                
+                return (start_day, start_hour, start_minute), (end_day, end_hour, end_minute)
+            except (ValueError, IndexError) as e:
+                print(f"Error parsing maintenance window: {e}")
+                return None, None
+
+        def get_day_number(day_str):
+            """Convert day string to number (0=Sunday, 1=Monday, etc.)"""
+            days = {
+                'sun': 0, 'mon': 1, 'tue': 2, 'wed': 3,
+                'thu': 4, 'fri': 5, 'sat': 6
+            }
+            return days.get(day_str.lower(), -1)
+
+        def get_next_maintenance_datetime(start_day, start_hour, start_minute, current_dt):
+            """Get the next occurrence of the maintenance window start time"""
+            start_day_num = get_day_number(start_day)
+            current_day_num = current_dt.weekday()  # Monday=0, Sunday=6
+            
+            # Convert to our numbering (Sunday=0)
+            current_day_num = (current_day_num + 1) % 7
+            
+            # Calculate days until next maintenance window
+            days_until = (start_day_num - current_day_num) % 7
+            
+            # Create the next maintenance datetime
+            next_maintenance = current_dt.replace(
+                hour=start_hour, 
+                minute=start_minute, 
+                second=0, 
+                microsecond=0
+            ) + timedelta(days=days_until)
+            
+            # If it's today but the time has passed, move to next week
+            if days_until == 0 and current_dt.time() > next_maintenance.time():
+                next_maintenance += timedelta(days=7)
+            
+            return next_maintenance
+
+        def get_next_maintenance_end_datetime(end_day, end_hour, end_minute, start_dt):
+            """Get the end time of the maintenance window"""
+            end_day_num = get_day_number(end_day)
+            start_day_num = start_dt.weekday()
+            start_day_num = (start_day_num + 1) % 7  # Convert to our numbering
+            
+            # Calculate days from start to end
+            days_diff = (end_day_num - start_day_num) % 7
+            
+            end_dt = start_dt.replace(
+                hour=end_hour,
+                minute=end_minute,
+                second=0,
+                microsecond=0
+            ) + timedelta(days=days_diff)
+            
+            return end_dt
+
+        def is_maintenance_overdue(window_str, current_dt):
+            """Check if maintenance window has passed and maintenance is overdue"""
+            if not window_str or window_str == "null":
+                return False, "No maintenance window defined"
+            
+            start_info, end_info = parse_maintenance_window(window_str)
+            if not start_info or not end_info:
+                return False, "Invalid maintenance window format"
+            
+            start_day, start_hour, start_minute = start_info
+            end_day, end_hour, end_minute = end_info
+            
+            # Get the most recent maintenance window
+            next_start = get_next_maintenance_datetime(start_day, start_hour, start_minute, current_dt)
+            
+            # If next start is in the future, check if we missed the previous one
+            if next_start > current_dt:
+                # Check previous week's maintenance window
+                prev_start = next_start - timedelta(days=7)
+                prev_end = get_next_maintenance_end_datetime(end_day, end_hour, end_minute, prev_start)
+                
+                if current_dt > prev_end:
+                    return True, f"Maintenance window passed: {prev_start.strftime('%a %H:%M')} - {prev_end.strftime('%a %H:%M')} UTC"
+                else:
+                    return False, f"Currently in maintenance window or window upcoming: {prev_start.strftime('%a %H:%M')} - {prev_end.strftime('%a %H:%M')} UTC"
+            else:
+                # We're at or past the start time, check if we're past the end time
+                next_end = get_next_maintenance_end_datetime(end_day, end_hour, end_minute, next_start)
+                
+                if current_dt > next_end:
+                    return True, f"Maintenance window passed: {next_start.strftime('%a %H:%M')} - {next_end.strftime('%a %H:%M')} UTC"
+                else:
+                    return False, f"Currently in maintenance window: {next_start.strftime('%a %H:%M')} - {next_end.strftime('%a %H:%M')} UTC"
+
+        if __name__ == "__main__":
+            if len(sys.argv) != 2:
+                print("Usage: python3 check-maintenance-window.py <maintenance_window>")
+                sys.exit(1)
+            
+            maintenance_window = sys.argv[1]
+            current_time = datetime.now(timezone.utc)
+            
+            is_overdue, message = is_maintenance_overdue(maintenance_window, current_time)
+            
+            print(f"Current time: {current_time.strftime('%a %Y-%m-%d %H:%M:%S')} UTC")
+            print(f"Maintenance window: {maintenance_window}")
+            print(f"Status: {message}")
+            print(f"Overdue: {is_overdue}")
+            
+            # Output for GitHub Actions
+            print(f"overdue={str(is_overdue).lower()}")
+        EOF
+        
+        chmod +x check-maintenance-window.py
+    
+    - name: Check RDS maintenance status
+      id: check_maintenance
+      run: |
+        echo "Checking RDS maintenance status for instance: $RDS_INSTANCE_IDENTIFIER"
+        
+        # Get RDS instance details
+        RDS_INFO=$(aws rds describe-db-instances \
+          --db-instance-identifier "$RDS_INSTANCE_IDENTIFIER" \
+          --query 'DBInstances[0]' \
+          --output json)
+        
+        # Extract maintenance window
+        MAINTENANCE_WINDOW=$(echo "$RDS_INFO" | jq -r '.PreferredMaintenanceWindow // empty')
+        
+        echo "Maintenance Window: $MAINTENANCE_WINDOW"
+        
+        # Check for pending maintenance actions
+        PENDING_ACTIONS=$(aws rds describe-pending-maintenance-actions \
+          --resource-identifier "arn:aws:rds:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):db:$RDS_INSTANCE_IDENTIFIER" \
+          --query 'PendingMaintenanceActions[0].PendingMaintenanceActionDetails' \
+          --output json 2>/dev/null || echo '[]')
+        
+        echo "Pending Actions: $PENDING_ACTIONS"
+        
+        # Check if there are pending maintenance actions
+        if [ "$PENDING_ACTIONS" != "[]" ] && [ "$PENDING_ACTIONS" != "null" ]; then
+          echo "Found pending maintenance actions"
+          
+          # Use the improved maintenance window checker
+          if [ ! -z "$MAINTENANCE_WINDOW" ] && [ "$MAINTENANCE_WINDOW" != "null" ]; then
+            echo "Checking if maintenance window has passed..."
+            
+            CHECKER_OUTPUT=$(python3 check-maintenance-window.py "$MAINTENANCE_WINDOW")
+            echo "$CHECKER_OUTPUT"
+            
+            # Extract the overdue status
+            OVERDUE_STATUS=$(echo "$CHECKER_OUTPUT" | grep "overdue=" | cut -d'=' -f2)
+            
+            if [ "$OVERDUE_STATUS" = "true" ]; then
+              echo "overdue_maintenance=true" >> $GITHUB_OUTPUT
+              echo "maintenance_window=$MAINTENANCE_WINDOW" >> $GITHUB_OUTPUT
+              echo "✅ Maintenance should be applied - window has passed"
+            else
+              echo "overdue_maintenance=false" >> $GITHUB_OUTPUT
+              echo "⏳ Maintenance window not yet passed or currently active"
+            fi
+          else
+            echo "overdue_maintenance=false" >> $GITHUB_OUTPUT
+            echo "No maintenance window found"
+          fi
+        else
+          echo "overdue_maintenance=false" >> $GITHUB_OUTPUT
+          echo "No pending maintenance actions found"
+        fi
+    
+    - name: Create PagerDuty maintenance window for all services
+      if: steps.check_maintenance.outputs.overdue_maintenance == 'true'
+      id: create_pd_maintenance
+      run: |
+        echo "Creating PagerDuty maintenance window for all services..."
+        
+        # Run the Python script to create maintenance window
+        python3 pagerduty-maintenance.py
+        
+        echo "PagerDuty maintenance window created for all services"
+    
+    - name: Apply RDS maintenance
+      if: steps.check_maintenance.outputs.overdue_maintenance == 'true'
+      run: |
+        echo "Applying immediate maintenance to RDS instance: $RDS_INSTANCE_IDENTIFIER"
+        
+        # Apply pending maintenance immediately
+        aws rds apply-pending-maintenance-action \
+          --resource-identifier "arn:aws:rds:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):db:$RDS_INSTANCE_IDENTIFIER" \
+          --apply-action-immediately \
+          --opt-in-type immediate
+        
+        echo "Maintenance application initiated"
+        
+        # Wait for maintenance to start
+        echo "Waiting for maintenance to begin..."
+        sleep 60
+        
+        # Monitor maintenance status
+        for i in {1..30}; do
+          STATUS=$(aws rds describe-db-instances \
+            --db-instance-identifier "$RDS_INSTANCE_IDENTIFIER" \
+            --query 'DBInstances[0].DBInstanceStatus' \
+            --output text)
+          
+          echo "Current RDS status: $STATUS"
+          
+          if [[ "$STATUS" == "maintaining" ]]; then
+            echo "Maintenance has started successfully"
+            break
+          elif [[ "$STATUS" == "available" ]]; then
+            echo "Instance is available - checking if maintenance completed"
+            # Check if pending maintenance is cleared
+            PENDING_CHECK=$(aws rds describe-pending-maintenance-actions \
+              --resource-identifier "arn:aws:rds:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):db:$RDS_INSTANCE_IDENTIFIER" \
+              --query 'PendingMaintenanceActions[0].PendingMaintenanceActionDetails' \
+              --output json 2>/dev/null || echo '[]')
+            
+            if [ "$PENDING_CHECK" == "[]" ] || [ "$PENDING_CHECK" == "null" ]; then
+              echo "Maintenance completed successfully"
+              break
+            fi
+          fi
+          
+          echo "Waiting for maintenance to start/complete... (attempt $i/30)"
+          sleep 60
+        done
+    
+    - name: Verify maintenance completion
+      if: steps.check_maintenance.outputs.overdue_maintenance == 'true'
+      run: |
+        echo "Verifying maintenance completion..."
+        
+        # Final status check
+        FINAL_STATUS=$(aws rds describe-db-instances \
+          --db-instance-identifier "$RDS_INSTANCE_IDENTIFIER" \
+          --query 'DBInstances[0].DBInstanceStatus' \
+          --output text)
+        
+        echo "Final RDS status: $FINAL_STATUS"
+        
+        # Check remaining pending maintenance
+        REMAINING_MAINTENANCE=$(aws rds describe-pending-maintenance-actions \
+          --resource-identifier "arn:aws:rds:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):db:$RDS_INSTANCE_IDENTIFIER" \
+          --query 'PendingMaintenanceActions[0].PendingMaintenanceActionDetails' \
+          --output json 2>/dev/null || echo '[]')
+        
+        echo "Remaining pending maintenance: $REMAINING_MAINTENANCE"
+        
+        if [ "$FINAL_STATUS" == "available" ] && ([ "$REMAINING_MAINTENANCE" == "[]" ] || [ "$REMAINING_MAINTENANCE" == "null" ]); then
+          echo "✅ Maintenance completed successfully"
+        else
+          echo "⚠️  Maintenance may still be in progress or failed"
+          exit 1
+        fi
+    
+    - name: Send notification
+      if: always()
+      run: |
+        if [ "${{ steps.check_maintenance.outputs.overdue_maintenance }}" == "true" ]; then
+          echo "📧 Sending notification about maintenance completion"
+          # Add your notification logic here (Slack, email, etc.)
+          echo "RDS maintenance workflow completed for instance: $RDS_INSTANCE_IDENTIFIER"
+        else
+          echo "ℹ️  No overdue maintenance found for RDS instance: $RDS_INSTANCE_IDENTIFIER"
+        fi
