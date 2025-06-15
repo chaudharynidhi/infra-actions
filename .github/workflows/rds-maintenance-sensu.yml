@@ -8,7 +8,7 @@ on:
   workflow_dispatch: # Allow manual trigger
 
 env:
-  AWS_REGION: us-east-1 # Change to your preferred region
+  AWS_REGION: eu-west-1 # Change to your preferred region
   CLEVERTAP_SNE_PD_AUTHORIZATION_TOKEN: ${{ secrets.CLEVERTAP_SNE_PD_AUTHORIZATION_TOKEN }}
   RDS_INSTANCE_IDENTIFIER: system-sensu-v2-sensuv2rdsdbinstance-uqswleum7tc0
 
@@ -311,89 +311,3 @@ jobs:
         python3 pagerduty-maintenance.py
         
         echo "PagerDuty maintenance window created for all services"
-    
-    - name: Apply RDS maintenance
-      if: steps.check_maintenance.outputs.overdue_maintenance == 'true'
-      run: |
-        echo "Applying immediate maintenance to RDS instance: $RDS_INSTANCE_IDENTIFIER"
-        
-        # Apply pending maintenance immediately
-        aws rds apply-pending-maintenance-action \
-          --resource-identifier "arn:aws:rds:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):db:$RDS_INSTANCE_IDENTIFIER" \
-          --apply-action-immediately \
-          --opt-in-type immediate
-        
-        echo "Maintenance application initiated"
-        
-        # Wait for maintenance to start
-        echo "Waiting for maintenance to begin..."
-        sleep 60
-        
-        # Monitor maintenance status
-        for i in {1..30}; do
-          STATUS=$(aws rds describe-db-instances \
-            --db-instance-identifier "$RDS_INSTANCE_IDENTIFIER" \
-            --query 'DBInstances[0].DBInstanceStatus' \
-            --output text)
-          
-          echo "Current RDS status: $STATUS"
-          
-          if [[ "$STATUS" == "maintaining" ]]; then
-            echo "Maintenance has started successfully"
-            break
-          elif [[ "$STATUS" == "available" ]]; then
-            echo "Instance is available - checking if maintenance completed"
-            # Check if pending maintenance is cleared
-            PENDING_CHECK=$(aws rds describe-pending-maintenance-actions \
-              --resource-identifier "arn:aws:rds:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):db:$RDS_INSTANCE_IDENTIFIER" \
-              --query 'PendingMaintenanceActions[0].PendingMaintenanceActionDetails' \
-              --output json 2>/dev/null || echo '[]')
-            
-            if [ "$PENDING_CHECK" == "[]" ] || [ "$PENDING_CHECK" == "null" ]; then
-              echo "Maintenance completed successfully"
-              break
-            fi
-          fi
-          
-          echo "Waiting for maintenance to start/complete... (attempt $i/30)"
-          sleep 60
-        done
-    
-    - name: Verify maintenance completion
-      if: steps.check_maintenance.outputs.overdue_maintenance == 'true'
-      run: |
-        echo "Verifying maintenance completion..."
-        
-        # Final status check
-        FINAL_STATUS=$(aws rds describe-db-instances \
-          --db-instance-identifier "$RDS_INSTANCE_IDENTIFIER" \
-          --query 'DBInstances[0].DBInstanceStatus' \
-          --output text)
-        
-        echo "Final RDS status: $FINAL_STATUS"
-        
-        # Check remaining pending maintenance
-        REMAINING_MAINTENANCE=$(aws rds describe-pending-maintenance-actions \
-          --resource-identifier "arn:aws:rds:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):db:$RDS_INSTANCE_IDENTIFIER" \
-          --query 'PendingMaintenanceActions[0].PendingMaintenanceActionDetails' \
-          --output json 2>/dev/null || echo '[]')
-        
-        echo "Remaining pending maintenance: $REMAINING_MAINTENANCE"
-        
-        if [ "$FINAL_STATUS" == "available" ] && ([ "$REMAINING_MAINTENANCE" == "[]" ] || [ "$REMAINING_MAINTENANCE" == "null" ]); then
-          echo "✅ Maintenance completed successfully"
-        else
-          echo "⚠️  Maintenance may still be in progress or failed"
-          exit 1
-        fi
-    
-    - name: Send notification
-      if: always()
-      run: |
-        if [ "${{ steps.check_maintenance.outputs.overdue_maintenance }}" == "true" ]; then
-          echo "📧 Sending notification about maintenance completion"
-          # Add your notification logic here (Slack, email, etc.)
-          echo "RDS maintenance workflow completed for instance: $RDS_INSTANCE_IDENTIFIER"
-        else
-          echo "ℹ️  No overdue maintenance found for RDS instance: $RDS_INSTANCE_IDENTIFIER"
-        fi
