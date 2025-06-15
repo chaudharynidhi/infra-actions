@@ -10,7 +10,7 @@ on:
 env:
   AWS_REGION: eu-west-1 # Change to your preferred region
   CLEVERTAP_SNE_PD_AUTHORIZATION_TOKEN: ${{ secrets.CLEVERTAP_SNE_PD_AUTHORIZATION_TOKEN }}
-  RDS_INSTANCE_IDENTIFIER: system-sensu-v2-sensuv2rdsdbinstance-uqswleum7tc0
+  RDS_INSTANCE_IDENTIFIER: database-1
 
 jobs:
   check-and-apply-maintenance:
