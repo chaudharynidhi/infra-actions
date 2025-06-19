@@ -10,7 +10,7 @@ on:
 env:
   AWS_REGION: eu-west-1 # Change to your preferred region
   CLEVERTAP_SNE_PD_AUTHORIZATION_TOKEN: ${{ secrets.CLEVERTAP_SNE_PD_AUTHORIZATION_TOKEN }}
-  RDS_INSTANCE_IDENTIFIER: database-1
+  RDS_INSTANCE_IDENTIFIER: system-sensu-v2-sensuv2rdsdbinstance-uqswleum7tc0
 
 jobs:
   check-and-apply-maintenance:
@@ -266,7 +266,7 @@ jobs:
         PENDING_ACTIONS=$(aws rds describe-pending-maintenance-actions \
           --resource-identifier "arn:aws:rds:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):db:$RDS_INSTANCE_IDENTIFIER" \
           --query 'PendingMaintenanceActions[0].PendingMaintenanceActionDetails' \
-          --output json 2>/dev/null || echo '[]')
+          --output json )
         
         echo "Pending Actions: $PENDING_ACTIONS"
         
