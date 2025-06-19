@@ -267,7 +267,7 @@ jobs:
           --resource-identifier "arn:aws:rds:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):db:$RDS_INSTANCE_IDENTIFIER" \
           --query 'PendingMaintenanceActions[0].PendingMaintenanceActionDetails' \
           --output json )
-        
+        echo "applyAction=$(echo "$PENDING_ACTIONS" | jq -r '.[0].Action')" >> $GITHUB_OUTPUT
         echo "Pending Actions: $PENDING_ACTIONS"
         
         # Check if there are pending maintenance actions
@@ -316,13 +316,14 @@ jobs:
       if: steps.check_maintenance.outputs.overdue_maintenance == 'true'
       run: |
         echo "Applying immediate maintenance to RDS instance: $RDS_INSTANCE_IDENTIFIER"
-        
+        echo "Applying action: ${{ steps.check_maintenance.outputs.applyAction }}"
         # Apply pending maintenance immediately
         aws rds apply-pending-maintenance-action \
           --resource-identifier "arn:aws:rds:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):db:$RDS_INSTANCE_IDENTIFIER" \
           --apply-action-immediately \
-          --opt-in-type immediate
-        
+          --opt-in-type immediate \
+          --apply-action ${{ steps.check_maintenance.outputs.applyAction }}
+
         echo "Maintenance application initiated"
         
         # Wait for maintenance to start
