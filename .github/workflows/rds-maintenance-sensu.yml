@@ -320,7 +320,6 @@ jobs:
         # Apply pending maintenance immediately
         aws rds apply-pending-maintenance-action \
           --resource-identifier "arn:aws:rds:$AWS_REGION:$(aws sts get-caller-identity --query Account --output text):db:$RDS_INSTANCE_IDENTIFIER" \
-          --apply-action-immediately \
           --opt-in-type immediate \
           --apply-action ${{ steps.check_maintenance.outputs.applyAction }}
 
